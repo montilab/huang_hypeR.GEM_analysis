@@ -1,0 +1,190 @@
+---
+title: "NECS EL Sankey Diagram"
+author: "Ziwei Huang"
+date:   "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    theme: united
+    code_folding: hide
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,message = FALSE,warning = FALSE)
+```
+
+## Setting
+```{r}
+rm(list=ls())
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(hypeR))
+
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(ggalluvial))
+suppressPackageStartupMessages(library(ggsankey))
+suppressPackageStartupMessages(library(networkD3))
+
+
+PATH <- file.path(Sys.getenv("NECS"),"Ziwei_Analysis","hypeR.GEM_evaluation")
+
+devtools::load_all(file.path(PATH, "../in_dev_packages/hypeR.GEM"))
+
+source(file.path(PATH,"R/utility.R"))
+source(file.path(PATH,"R/sankey_plot.R"))
+```
+
+
+## Load analyzed data
+```{r}
+met_sigs <- read_multiple_sheets(file.path(PATH,"data/NECS/supp_tables_formatted.xlsx"),
+                                   excluded = "Annotation")
+
+## Only use Table S1(age), S2(EL)
+met_diffanal <- met_sigs$Table_S2
+
+## hypeR-GEM objects
+hypeR_GEM_obj <- readRDS(file = file.path(PATH, "data/NECS/EL_hypR_object.rds"))
+hypeR_GEM_obj_di <- readRDS(file = file.path(PATH, "data/NECS/EL_hypR_object_di.rds"))
+
+## gene-level evaluation results
+table_protein <- readRDS(file = file.path(PATH, "data/NECS/EL_table_protein.rds"))
+table_protein_di <- readRDS(file = file.path(PATH, "data/NECS/EL_table_protein_di.rds"))
+```
+
+## Load genesets
+```{r}
+data("Human_GEM_tables")
+GEM_gene_map <- gprofiler2::gconvert(query = Human_GEM_tables$gene_df$name,
+                                     organism = "hsapiens",
+                                     target = "ENSG",
+                                     filter_na = TRUE) %>%
+   dplyr::select(input, name) %>%
+   dplyr::rename(ensemble_ID = input, symbol = name)
+
+hallmark <- hypeR::msigdb_gsets(species="Homo sapiens", "H",clean = TRUE)
+kegg <- hypeR::msigdb_gsets(species="Homo sapiens", "C2", "CP:KEGG_LEGACY", clean = TRUE)
+reactome <- hyperdb_rgsets("REACTOME", "70.0")
+
+## background
+gene_background <- GEM_gene_map$symbol
+#gene_background <- table_protein$background
+```
+
+```{r}
+hallmark_flt <- reduce_gsets(hallmark, gene_background, min_size = 5)
+```
+
+```{r}
+kegg_flt <- reduce_gsets(kegg, gene_background, min_size = 5)
+```
+
+```{r}
+reactome_flt <- reduce_gsets(reactome, gene_background, min_size = 5)
+```
+
+## Load Msets
+```{r}
+## MSETS
+M_metabolon_refmetID <- readRDS(file = file.path(PATH, "data/MSETS/MSETS_metabolon_refmetID.rds"))
+
+## RMSETS
+R_refmet_refmetID <- readRDS(file = file.path(PATH, "data/MSETS/RMSETS_refmet_necs2022_refmetID_v1.0.rds"))
+R_metabolon_refmetID <- readRDS(file = file.path(PATH,"data/MSETS/RMSETS_metabolon_necs2022_refmetID_v1.0.rds"))
+
+## filtering
+M_metabolonSupPthwy_flt <- mset_reduce(M_metabolon_refmetID$metabolonSupPthwy, met_diffanal$refmet_name , min_size=5)
+M_metabolonSubPthwy_flt <- mset_reduce(M_metabolon_refmetID$metabolonSubPthwy, met_diffanal$refmet_name , min_size=5)
+
+names(M_metabolonSubPthwy_flt)[names(M_metabolonSubPthwy_flt) == 
+  "Long Chain Polyunsaturated Fatty Acid (n3 and n6)"] <- "Long Chain Polyunsaturated FA"
+
+names(M_metabolonSubPthwy_flt)[names(M_metabolonSubPthwy_flt) == "Long Chain Monounsaturated Fatty Acid"] <- "Long Chain Monounsaturated FA"
+
+names(M_metabolonSubPthwy_flt)[names(M_metabolonSubPthwy_flt) == "Fatty Acid Metabolism (also BCAA Metabolism)"] <- "FA and BCAA Metabolism"    
+
+names(M_metabolonSubPthwy_flt)[names(M_metabolonSubPthwy_flt) == "Methionine, Cysteine, SAM and Taurine Metabolism"] <- "Met,Cys,SAM and TAU Metabolism"
+
+names(M_metabolonSubPthwy_flt)[names(M_metabolonSubPthwy_flt) == "Urea cycle; Arginine and Proline Metabolism"] <- "Urea cycle,Arg and Pro Metabolism"   
+
+M_refmetSuperClass_flt <- mset_reduce(M_metabolon_refmetID$refmetSuperClass, met_diffanal$refmet_name , min_size=5)
+M_refmetMainClass_flt <- mset_reduce(M_metabolon_refmetID$refmetMainClass, met_diffanal$refmet_name , min_size=5)
+M_refmetSubClass_flt <- mset_reduce(M_metabolon_refmetID$refmetSubClass, met_diffanal$refmet_name , min_size=5)
+
+
+## organize
+metabolon_msets <- list(metabolonSupPthwy = M_metabolonSupPthwy_flt,
+                        metabolonSubPthwy = M_metabolonSubPthwy_flt)
+
+refmet_msets <- list(refmetSuperClass = M_refmetSuperClass_flt,
+                     refmetMainClass = M_refmetMainClass_flt,
+                     refmetSubClass = M_refmetSubClass_flt)
+
+#names(M_metabolonSubPthwy_flt)
+```
+
+## Enriched MSETs
+```{r}
+max_fdr <- 0.05
+
+met_sigs <- list(
+  up = met_diffanal %>% dplyr::filter(cent.q.value <= max_fdr & cent.Estimate > 0),
+  dn = met_diffanal %>% dplyr::filter(cent.q.value <= max_fdr & cent.Estimate < 0))
+
+
+
+## metabolite used as hypeR-GEM input
+met_hyp_input <- list(up = met_sigs$up$refmet_name,
+                      dn = met_sigs$dn$refmet_name)
+
+## Metabolon
+metabolon_hyp_enrich <- enrich_helper(met_hyp_input, metabolon_msets, background=nrow(met_diffanal), threshold=max_fdr) %>%
+  dplyr::mutate(full_label = stringr::str_c(label, set_name, sep = "_"))
+
+metabolon_msets <- lapply(metabolon_msets, function(x,enriched_pathways){return(x[names(x)%in%enriched_pathways])}, enriched_pathways = metabolon_hyp_enrich$label)
+
+## Refmet
+refmet_hyp_enrich <- enrich_helper(met_hyp_input, refmet_msets, background=nrow(met_diffanal), threshold=max_fdr) %>%
+  dplyr::mutate(full_label = stringr::str_c(label, set_name, sep = "_"))
+
+refmet_msets <- lapply(refmet_msets, function(x,enriched_pathways){return(x[names(x)%in%enriched_pathways])}, enriched_pathways = refmet_hyp_enrich$label)
+```
+
+
+## Enriched GSETs
+```{r}
+max_fdr <- 0.05
+gsets_list <- list(hallmark = hallmark_flt$genesets,
+                   kegg = kegg_flt$genesets,
+                   reactome = reactome_flt$genesets)
+
+## gene signatures
+gene_layer_sigs <- list(up = table_protein$met2gene_list$up, 
+                        down = table_protein$met2gene_list$dn)
+
+gene_layer_enrich <- enrich_helper(gene_layer_sigs, gsets_list, background=3068, threshold=max_fdr) %>%
+    dplyr::mutate(full_label = stringr::str_c(label, set_name, sep = "_"))
+  
+gsets_list <- lapply(gsets_list, function(x,enriched_pathways){return(x[names(x)%in%enriched_pathways])}, enriched_pathways = gene_layer_enrich$label)
+
+```
+
+```{r}
+#library(webshot2)
+#library(htmlwidgets)
+
+
+p1 <- sankey_plot(hypeR_GEM_obj, metabolon_msets, gsets_list, key = "refmet_name",font_size=14,node_width=20)
+
+p1
+
+#p2 <- sankey_plot(hypeR_GEM_obj, refmet_msets, gsets_list, key = "refmet_name",font_size=14,node_width=20)
+
+#p2
+
+#networkD3::saveNetwork()
+#saveNetwork(file = 'Net1.html')
+
+
+#saveWidget(p2, file = "sankey_refmet.html", selfcontained = TRUE)
+```

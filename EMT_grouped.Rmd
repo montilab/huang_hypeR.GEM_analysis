@@ -1,0 +1,1042 @@
+---
+title: "EMT data differential analysis using mixed effect linear model"
+author: "Ziwei Huang"
+date:   "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    theme: united
+    code_folding: hide
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,message = FALSE,warning = FALSE)
+```
+
+## Setting
+```{r}
+rm(list=ls())
+suppressPackageStartupMessages(library(Biobase))
+suppressPackageStartupMessages(library(GSVA))
+suppressPackageStartupMessages(library(Matrix))
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(lme4))
+suppressPackageStartupMessages(library(lmerTest))
+suppressPackageStartupMessages(library(hypeR))
+suppressPackageStartupMessages(library(gprofiler2))
+suppressPackageStartupMessages(library(DT))
+
+
+PATH <- file.path(Sys.getenv("NECS"),"Ziwei_Analysis","hypeR.GEM_evaluation")
+devtools::load_all(file.path(PATH, "../in_dev_packages/hypeR.GEM"))
+
+source(file.path(PATH,"R/utility.R"))
+```
+
+## Load original EMT data
+```{r}
+samples <- c("T0_r1", "T0_r2", "T0_r3",
+             "T1_r1", "T1_r2", "T1_r3",
+             "T2_r1", "T2_r2", "T2_r3",
+             "T6_r1", "T6_r2", "T6_r3",
+             "T7_r1", "T7_r2", "T7_r3",
+             "T8_r1", "T8_r2", "T8_r3",
+             "T9_r1", "T9_r2", "T9_r3")
+
+samples_mRNA <- c("T0", "T1", "T2", "T6", "T7", "T8", "T9")
+
+pdata <- data.frame(state = factor(c(rep("E",3*3), rep("M",3*4)), 
+                                   levels = (c("E","M"))),
+                    replicates = factor(rep(c("r1","r2","r3"),3+4), 
+                                        levels=c("r1","r2","r3"))) %>% 
+  magrittr::set_rownames(samples)
+
+
+pdata_mRNA <- data.frame(state = factor(c(rep("E",3), rep("M",4)), 
+                                   levels = (c("E","M")))) %>% 
+   magrittr::set_rownames(samples_mRNA)
+
+
+
+## Load mRNA and create Expression Set
+mRNA <- read.delim(file = file.path(PATH, "data/EMT/2023_aemili_mcf10a_emt/table_emt_mRNA.txt")) %>% 
+ dplyr::rename_all(list(~stringr::str_replace_all( ., "_r1", "" ) )) %>% 
+  dplyr::rename(symbol = Gene.names) %>% 
+  dplyr::mutate(symbol = stringr::str_replace(symbol, "_mRNA", "")) %>% 
+  dplyr::select(c("symbol", "T0", "T1", "T2", 
+                  "T6","T7","T8","T9")) %>% 
+  tibble::column_to_rownames(var = "symbol")
+
+
+mRNA_eset <- ExpressionSet(
+  assayData=as.matrix(mRNA),
+  phenoData=AnnotatedDataFrame(pdata_mRNA))
+
+## load protein data and create Expression Set
+protein <- read.delim(file = file.path(PATH, "data/EMT/2023_aemili_mcf10a_emt/dat_irs_norm_emt_proteome.txt")) %>%
+  dplyr::rename(symbol = Gene.names) %>%
+  dplyr::select(c("symbol",samples)) %>%
+  dplyr::distinct(symbol, .keep_all = TRUE) %>%
+  tibble::column_to_rownames(var = "symbol")
+
+protein_eset <- ExpressionSet(
+  assayData=as.matrix(protein),
+  phenoData=AnnotatedDataFrame(pdata))
+
+
+## load metabolite data and create Expression Set
+metabolite <- read.delim(file = file.path(PATH, "data/EMT/2023_aemili_mcf10a_emt/dat_irs_norm_emt_metabol.txt")) %>%
+  dplyr::mutate(HMDB = gsub("_.*", "", my_ID)) %>%
+  dplyr::select(-c("my_ID")) %>%
+  dplyr::select(c("HMDB",samples)) %>%
+  dplyr::distinct(HMDB, .keep_all = TRUE) %>%
+  tibble::column_to_rownames(var = "HMDB")
+
+metabolite_eset <- ExpressionSet(
+  assayData=as.matrix(metabolite),
+  phenoData=AnnotatedDataFrame(pdata))
+```
+
+```{r}
+data.frame(number = c(nrow(exprs(metabolite_eset)),nrow(exprs(protein_eset)), nrow(exprs(mRNA_eset)))) %>% 
+  magrittr::set_rownames(c("metabolite","protein","mRNA")) %>% 
+  DT::datatable(.)
+```
+
+## Differential analysis using mixed effect linear regression {.tabset}
+
+### mRNA (fixed effect)
+```{r}
+## define max_fdr
+max_fdr <-  0.05
+
+## mRNA
+do.run <- FALSE
+if(do.run){
+  
+  mRNA_diffanal <- apply(exprs(mRNA_eset), 1, function(y){
+      tmp <- lm(y ~ 1 + state, data = pData(mRNA_eset))
+      return(summary(tmp)$coefficients["stateM",c("Estimate","Std. Error","t value","Pr(>|t|)")])
+      }) %>% 
+    t(.) %>% 
+    data.frame(.) %>% 
+    dplyr::rename(estimate="Estimate",se="Std..Error", tvalue = "t.value", pvalue="Pr...t..") %>% 
+    dplyr::mutate(fdr=p.adjust(pvalue,method="BH")) %>% 
+    tibble::rownames_to_column(var="symbol") %>% 
+    dplyr::mutate(gene_type  = case_when(
+      estimate > 0 & fdr < max_fdr ~ "up",
+      estimate < 0 & fdr < max_fdr ~ "dn",
+      TRUE ~ "ns"
+    ))
+  saveRDS(mRNA_diffanal, file = file.path(PATH, "data/EMT/mRNA_diffanal.rds"))
+}else{
+  mRNA_diffanal <- readRDS(file = file.path(PATH, "data/EMT/mRNA_diffanal.rds"))
+}
+
+mRNA_up <- mRNA_diffanal %>% 
+  dplyr::filter(gene_type == "up")
+
+mRNA_dn <- mRNA_diffanal %>% 
+  dplyr::filter(gene_type == "dn")
+
+mRNA_sigs <- list(up = mRNA_up,
+                 dn = mRNA_dn)
+
+## check
+sapply(mRNA_sigs ,nrow) %>%  tibble::enframe(value = "size")
+```
+
+### protein (mixed effect)
+```{r}
+## define max_fdr
+max_fdr <-  0.001
+## protein
+do.run <- FALSE
+if(do.run){
+  protein_diffanal <- apply(exprs(protein_eset), 1, function(y){
+      tmp <- lmer(y ~ 1 + state + (1 |replicates), data = pData(protein_eset))
+      return(summary(tmp)$coefficients["stateM",c("Estimate","Std. Error","t value","Pr(>|t|)")])
+    }) %>% 
+    t(.) %>% 
+    data.frame(.) %>% 
+    dplyr::rename(estimate="Estimate",se="Std..Error", tvalue = "t.value", pvalue="Pr...t..") %>% 
+    dplyr::mutate(fdr=p.adjust(pvalue,method="BH")) %>% 
+    tibble::rownames_to_column(var="symbol") %>% 
+    dplyr::mutate(gene_type  = case_when(
+      estimate > 0 & fdr < max_fdr ~ "up",
+      estimate < 0 & fdr < max_fdr ~ "dn",
+      TRUE ~ "ns"
+    ))
+  saveRDS(protein_diffanal, file = file.path(PATH, "data/EMT/protein_diffanal.rds"))
+}else{
+  protein_diffanal <- readRDS(file = file.path(PATH, "data/EMT/protein_diffanal.rds"))
+}
+
+
+prot_up <- protein_diffanal %>% 
+  dplyr::filter(gene_type == "up")
+
+prot_dn <- protein_diffanal %>% 
+  dplyr::filter(gene_type == "dn")
+
+prot_sigs <- list(up = prot_up,
+                  dn = prot_dn)
+
+## check
+sapply(prot_sigs ,nrow) %>%  tibble::enframe(value = "size")
+```
+
+### metabolite (mixed effect)
+```{r}
+## define max_fdr
+max_fdr <-  0.05
+
+## metabolite
+do.run <- FALSE
+if(do.run){
+  met_diffanal <- apply(exprs(metabolite_eset), 1, function(y){
+      tmp <- lmer(y ~ 1 + state + (1 |replicates), data = pData(metabolite_eset))
+      return(summary(tmp)$coefficients["stateM",c("Estimate","Std. Error","t value","Pr(>|t|)")])
+    }) %>% 
+    t(.) %>% 
+    data.frame(.) %>% 
+    dplyr::rename(estimate="Estimate",se="Std..Error", tvalue = "t.value", pvalue="Pr...t..") %>% 
+    dplyr::mutate(fdr=p.adjust(pvalue,method="BH")) %>% 
+    tibble::rownames_to_column(var="HMDB") %>% 
+    dplyr::mutate(gene_type  = case_when(
+      estimate > 0 & fdr < max_fdr ~ "up",
+      estimate < 0 & fdr < max_fdr ~ "dn",
+      TRUE ~ "ns"
+    ))
+  saveRDS(met_diffanal, file = file.path(PATH, "data/EMT/metabolite_diffanal.rds"))
+}else{
+  met_diffanal <- readRDS(file = file.path(PATH, "data/EMT/metabolite_diffanal.rds"))
+}
+
+met_up <- met_diffanal %>% 
+  dplyr::filter(gene_type == "up")
+
+met_dn <- met_diffanal %>% 
+  dplyr::filter(gene_type == "dn")
+
+met_sigs <- list(up = met_up,
+                 dn = met_dn)
+
+## check
+sapply(met_sigs ,nrow) %>%  tibble::enframe(value = "size")
+```
+
+## Summarize metabolite signatures and map HMDB to refmet_name or "fullname" in Human GEM
+```{r}
+string_similarity <- function(str, str_vec){
+  ## for a single string "str_1", compare with all strings in "str_vec2" and 
+  ## return the most similar string in "str_vec2", and associated similarity score
+  lsim <- c()
+  for(i in 1:length(str_vec)){
+    str2 <- str_vec[i]
+    lsim <- c(lsim, RecordLinkage::levenshteinSim(tolower(str), tolower(str2)))
+  }
+  return (c(str_vec[which.max(lsim)], max(lsim)))
+}
+
+
+tmp_wrapper <- function(HMDB_names, fullname){
+  df <- data.frame()
+  for (i in 1:length(HMDB_names)){
+    HMDB_name <- HMDB_names[i]
+    res <- string_similarity(HMDB_name, fullname)
+    df <- rbind(df, res)
+  }
+  colnames(df) = c("fullname", "similarity")
+  df <- df %>% 
+    dplyr::mutate(HMDB_match = HMDB_names,
+                  similarity = round(as.numeric(similarity),2)) %>% 
+    dplyr::select(fullname, HMDB_match, similarity)
+  
+  return(df)
+}
+```
+
+### Map HMDB metabolite names to metabolite names in the GEM
+```{r}
+data("Human_GEM_tables")
+mapped_HMDB <- readRDS(file = file.path(PATH,"data/EMT/mapped_HMDB.rds")) 
+
+do.run <- FALSE
+if(do.run){
+  ## obtain HMDB metabolite names from HMDB ID
+  met_up_name <- met_diffanal %>% 
+  dplyr::filter(gene_type == "up") %>% 
+  dplyr::inner_join(mapped_HMDB, by=c("HMDB"="Query")) %>% 
+  dplyr::pull(var="Match")
+  
+  met_dn_name <- met_diffanal %>% 
+  dplyr::filter(gene_type == "dn") %>% 
+  dplyr::inner_join(mapped_HMDB, by=c("HMDB"="Query")) %>% 
+  dplyr::pull(var="Match")
+
+  ## compare HMDB names to fullname in GEM
+  met_up <- tmp_wrapper(met_up_name, Human_GEM_tables$meta_df_merged$fullname)
+  
+  met_dn <- tmp_wrapper(met_dn_name, Human_GEM_tables$meta_df_merged$fullname)
+  
+  saveRDS(met_up, file = file.path(PATH, "data/EMT/met_up_str_match.RDS"))
+  saveRDS(met_dn, file = file.path(PATH, "data/EMT/met_dn_str_match.RDS"))
+}else{
+  met_up <- readRDS(file = file.path(PATH, "data/EMT/met_up_str_match.RDS"))
+  met_dn <- readRDS(file = file.path(PATH, "data/EMT/met_dn_str_match.RDS"))
+  
+}
+```
+
+
+### Set similarity threshold and construct metabolite signatures
+```{r}
+## default 0.85
+similarity_threshold <- 0.85
+
+met_up_filt <- met_up %>% dplyr::filter(similarity >= similarity_threshold)
+met_dn_filt <- met_dn %>% dplyr::filter(similarity >= similarity_threshold)
+
+met_sigs <- list(up = met_up_filt,
+                 dn = met_dn_filt)
+
+## check
+sapply(met_sigs ,nrow) %>%  tibble::enframe(value = "size")
+
+saveRDS(met_sigs, file = file.path(PATH, "data/EMT/met_sigs_hypeR_GEM.rds"))
+```
+
+## GEM mapping {.tabset}
+
+```{r}
+GEM_gene_map <- gprofiler2::gconvert(query = Human_GEM_tables$gene_df$name,
+                                     organism = "hsapiens",
+                                     target = "ENSG",
+                                     filter_na = TRUE) %>%
+   dplyr::select(input, name) %>%
+   dplyr::rename(ensemble_ID = input, symbol = name)
+
+```
+
+### Undirectional mapping
+```{r}
+hypeR_GEM_obj <- hypeR.GEM::signature2gene(signatures = met_sigs,
+                                           species = "Human",
+                                           directional = FALSE,
+                                           merge = TRUE,
+                                           promiscuous_threshold = 500,
+                                           ensemble_id = TRUE,
+                                           reference_key = 'fullname',
+                                           background = NULL)
+
+## check
+sapply(hypeR_GEM_obj$gene_tables,nrow) %>%  tibble::enframe(value = "size")
+
+saveRDS(hypeR_GEM_obj, file = file.path(PATH, "data/EMT/hypR_object.rds"))
+```
+
+
+
+
+### Directional mapping
+```{r}
+hypeR_GEM_obj_di <- hypeR.GEM::signature2gene(signatures = met_sigs,
+                                             species = "Human",
+                                             directional = TRUE,
+                                             merge = TRUE,
+                                             promiscuous_threshold = 500,
+                                             ensemble_id = TRUE,
+                                             reference_key = 'fullname',
+                                             background = NULL)
+
+## check
+sapply(hypeR_GEM_obj_di$gene_tables,nrow) %>%  tibble::enframe(value = "size")
+
+saveRDS(hypeR_GEM_obj_di, file = file.path(PATH, "data/EMT/hypR_object_di.rds"))
+```
+
+
+## Pair evaluation (gene-level, hypergeometric) {.tabset}
+
+- Take overlap between hypeR-GEM mapped genes and genes in proteomics ($GEM \cap genes\ in\ proteomics$)
+
+- Counter how many of these overlap genes are significant
+
+- Background = ($total GEM \cap proteomics$)
+
+- setA = ($GEM\ mapped \cap Background$)
+
+- setB = ($significant\ genes\ in\ proteomics \cap Background$)
+
+```{r}
+tmp <- sapply(met_sigs ,nrow) %>%  tibble::enframe(value = "size")
+
+background_list <- intersect(GEM_gene_map$symbol, protein_diffanal$symbol)
+
+table_protein <- pair_evaluation(hypeR_GEM_obj,
+                                 protein_diffanal,
+                                 background_list) 
+
+table_protein$df_grouped <- table_protein$df_grouped %>% 
+  dplyr::mutate(DE_met = sum(tmp$size)) %>% 
+  dplyr::select(DE_met, everything())
+
+table_protein_di <- pair_evaluation(hypeR_GEM_obj_di,
+                                    protein_diffanal,
+                                    background_list) 
+
+table_protein_di$df_grouped <- table_protein_di$df_grouped %>% 
+  dplyr::mutate(DE_met = sum(tmp$size)) %>% 
+  dplyr::select(DE_met, everything())
+
+saveRDS(table_protein, file = file.path(PATH, "data/EMT/table_protein.rds"))
+saveRDS(table_protein_di, file = file.path(PATH, "data/EMT/table_protein_di.rds"))
+```
+
+### Undirectional vs. Protein_diffanal
+```{r}
+table_protein$df_grouped %>%  DT::datatable(.)
+```
+
+### Directional vs. Protein_diffanal
+```{r}
+table_protein_di$df_grouped %>%  DT::datatable(.)
+```
+
+## Pair evaluation (pathway-level, hypergeometric)
+
+### Load genesets
+```{r}
+hallmark <- hypeR::msigdb_gsets(species="Homo sapiens", "H",clean = TRUE)
+kegg <- hypeR::msigdb_gsets(species="Homo sapiens", "C2", "CP:KEGG_LEGACY", clean = TRUE)
+reactome <- hyperdb_rgsets("REACTOME", "70.0")
+gobp <- hypeR::msigdb_gsets(species="Homo sapiens", "C5", "BP", clean = TRUE)
+gomf <- hypeR::msigdb_gsets(species="Homo sapiens", "C5", "MF", clean = TRUE)
+
+## background of each omics
+gene_background_GEM <- GEM_gene_map$symbol
+gene_background_protein <- protein_diffanal$symbol
+```
+
+```{r}
+hallmark_GEM <- reduce_gsets(hallmark, gene_background_GEM, min_size = 5)
+cat("\n")
+hallmark_protein <- reduce_gsets(hallmark, gene_background_protein, min_size = 5)
+
+cat("\n")
+
+hallmark_inter <- intersect(names(hallmark_GEM$genesets), names(hallmark_protein$genesets))
+hallmark_GEM$genesets <- hallmark_GEM$genesets[hallmark_inter]
+hallmark_protein$genesets <- hallmark_protein$genesets[hallmark_inter]
+
+print(length(hallmark_inter))
+```
+
+```{r}
+kegg_GEM <- reduce_gsets(kegg, gene_background_GEM, min_size = 5)
+cat("\n")
+kegg_protein <- reduce_gsets(kegg, gene_background_protein, min_size = 5)
+
+cat("\n")
+
+kegg_inter <- intersect(names(kegg_GEM$genesets), names(kegg_protein$genesets))
+kegg_GEM$genesets <- kegg_GEM$genesets[kegg_inter]
+kegg_protein$genesets <- kegg_protein$genesets[kegg_inter]
+
+print(length(kegg_inter))
+```
+
+```{r}
+reactome_GEM <- reduce_gsets(reactome, gene_background_GEM, min_size = 5)
+cat("\n")
+reactome_protein <- reduce_gsets(reactome, gene_background_protein, min_size = 5)
+
+cat("\n")
+
+reactome_inter <- intersect(names(reactome_GEM$genesets), names(reactome_protein$genesets))
+reactome_GEM$genesets <- reactome_GEM$genesets[reactome_inter]
+reactome_protein$genesets <- reactome_protein$genesets[reactome_inter]
+
+print(length(reactome_inter))
+```
+
+```{r}
+gobp_GEM <- reduce_gsets(gobp, gene_background_GEM, min_size = 5)
+cat("\n")
+gobp_protein <- reduce_gsets(gobp, gene_background_protein, min_size = 5)
+
+cat("\n")
+
+gobp_inter <- intersect(names(gobp_GEM$genesets), names(gobp_protein$genesets))
+gobp_GEM$genesets <- gobp_GEM$genesets[gobp_inter]
+gobp_protein$genesets <- gobp_protein$genesets[gobp_inter]
+
+print(length(gobp_inter))
+```
+
+```{r}
+gomf_GEM <- reduce_gsets(gomf, gene_background_GEM, min_size = 5)
+gomf_GEM <- trim_gomf(gomf_GEM)
+cat("\n")
+gomf_protein <- reduce_gsets(gomf, gene_background_protein, min_size = 5)
+gomf_protein <- trim_gomf(gomf_protein)
+
+cat("\n")
+
+gomf_inter <- intersect(names(gomf_GEM$genesets), names(gomf_protein$genesets))
+gomf_GEM$genesets <- gomf_GEM$genesets[gomf_inter]
+gomf_protein$genesets <- gomf_protein$genesets[gomf_inter]
+
+print(length(gomf_inter))
+```
+
+```{r}
+max_fdr <- 0.05
+## prepare genesets
+genesets_GEM <- list(hallmark = hallmark_GEM,
+                     kegg = kegg_GEM,
+                     reactome = reactome_GEM,
+                     gobp = gobp_GEM,
+                     gomf = gomf_GEM)
+
+genesets_protein <- list(hallmark = hallmark_protein,
+                        kegg = kegg_protein,
+                        reactome = reactome_protein,
+                        gobp = gobp_protein,
+                        gomf = gomf_protein)
+
+
+backgrounds <- c(length(hallmark_inter), length(kegg_inter), 
+                 length(reactome_inter),length(gobp_inter), length(gomf_inter))
+
+```
+
+#### Undirectional 
+```{r}
+## metabolites w/o background correction
+met2gene_signatures <- list(up = table_protein$met2gene_list$up,
+                            dn = table_protein$met2gene_list$dn)
+
+
+## proteins w/o background correction
+prot_signatures <- list(up = table_protein$signif_gene_up,
+                        dn = table_protein$signif_gene_dn)
+df <- data.frame()
+
+for(i in 1:length(genesets_GEM)){
+  
+  hyp_met <- hypeR(met2gene_signatures, 
+                   genesets_GEM[[i]], 
+                   test="hypergeometric", 
+                   background=length(GEM_gene_map$symbol))
+  
+  hyp_prot <- hypeR(prot_signatures, 
+                    genesets_protein[[i]], 
+                    test="hypergeometric", 
+                    background=nrow(protein_diffanal))
+  
+  res <- pair_evaluation_enrichment(hyp_met,
+                                    hyp_prot,
+                                    background = backgrounds[i],
+                                    max_fdr)
+  df <- rbind(df, res)
+}
+colnames(df) <- c("met_enriched","diffanal_enriched","overlap","pval","background", "hit_pathway")
+row.names(df) <- c("hallmark", "kegg","reactome","gobp","gomf")
+
+
+df %>% 
+  dplyr::select(-c("hit_pathway")) %>% 
+  DT::datatable(.) 
+```
+
+#### Directional 
+```{r}
+## metabolites w/o background correction
+met2gene_signatures <- list(up = table_protein_di$met2gene_list$up,
+                            dn = table_protein_di$met2gene_list$dn)
+
+## proteins w/o background correction
+prot_signatures <- list(up = table_protein_di$signif_gene_up,
+                        dn = table_protein_di$signif_gene_dn)
+
+
+df <- data.frame()
+for(i in 1:length(genesets_GEM)){
+  
+  hyp_met <- hypeR(met2gene_signatures, 
+                  genesets_GEM[[i]], 
+                  test="hypergeometric", 
+                  background=length(Human_GEM_tables$gene_df$name))
+  
+  hyp_prot <- hypeR(prot_signatures, 
+                    genesets_protein[[i]], 
+                    test="hypergeometric", 
+                    background=nrow(protein_diffanal))
+  
+  res <- pair_evaluation_enrichment(hyp_met,
+                                   hyp_prot,
+                                   background = backgrounds[i],
+                                   max_fdr)
+  df <- rbind(df, res)
+}
+colnames(df) <- c("met_enriched","diffanal_enriched","overlap","pval","background","hit_pathway")
+row.names(df) <- c("hallmark", "kegg","reactome","gobp","gomf")
+
+df %>% 
+  dplyr::select(-c("hit_pathway")) %>% 
+  DT::datatable(.) 
+```
+
+## Enrichment analysis on hypeR-GEM object {.tabset}
+
+### HALLMAKR {.tabset}
+
+#### Unweighted + undirectional
+```{r}
+uu_hallmark <- enrichment(hypeR_GEM_obj = hypeR_GEM_obj,
+                      genesets = hallmark_GEM$genesets,
+                      genesets_name = "HALLMARK",
+                      method = "unweighted",
+                      min_metabolite = 2,
+                      background = length(GEM_gene_map$symbol))
+
+saveRDS(uu_hallmark, file = file.path(PATH, "data/EMT/enrichment/uu_hallmark.rds"))
+```
+
+#### Weighted + undirectional
+
+```{r}
+wu_hallmark <- enrichment(hypeR_GEM_obj = hypeR_GEM_obj,
+                        genesets = hallmark_GEM$genesets,
+                        genesets_name = "HALLMARK",
+                        method = "weighted",
+                        min_metabolite = 2,
+                        background = length(GEM_gene_map$symbol))
+
+saveRDS(wu_hallmark, file = file.path(PATH, "data/EMT/enrichment/wu_hallmark.rds"))
+```
+
+#### Unweighted + directional
+
+```{r}
+ud_hallmark <- enrichment(hypeR_GEM_obj = hypeR_GEM_obj_di,
+                          genesets = hallmark_GEM$genesets,
+                          genesets_name = "HALLMARK",
+                          method = "unweighted",
+                          min_metabolite = 2,
+                          background = length(GEM_gene_map$symbol))
+
+saveRDS(ud_hallmark, file = file.path(PATH, "data/EMT/enrichment/ud_hallmark.rds"))
+```
+
+#### Weighted + directional
+
+```{r}
+wd_hallmark <- enrichment(hypeR_GEM_obj = hypeR_GEM_obj_di,
+                          genesets = hallmark_GEM$genesets,
+                          genesets_name = "HALLMARK",
+                          method = "weighted",
+                          min_metabolite = 2,
+                          background = length(GEM_gene_map$symbol))
+
+saveRDS(wd_hallmark, file = file.path(PATH, "data/EMT/enrichment/wd_hallmark.rds"))
+```
+
+
+
+### KEGG {.tabset}
+
+#### Unweighted + undirectional
+```{r}
+uu_kegg <- enrichment(hypeR_GEM_obj = hypeR_GEM_obj,
+                      genesets = kegg_GEM$genesets,
+                      genesets_name = "KEGG",
+                      method = "unweighted",
+                      min_metabolite = 2,
+                      background = length(GEM_gene_map$symbol))
+
+saveRDS(uu_kegg, file = file.path(PATH, "data/EMT/enrichment/uu_kegg.rds"))
+```
+
+
+#### Weighted + undirectional
+
+```{r}
+wu_kegg <- enrichment(hypeR_GEM_obj = hypeR_GEM_obj,
+                      genesets = kegg_GEM$genesets,
+                      genesets_name = "KEGG",
+                      method = "weighted",
+                      min_metabolite = 2,
+                      background = length(GEM_gene_map$symbol))
+
+saveRDS(wu_kegg, file = file.path(PATH, "data/EMT/enrichment/wu_kegg.rds"))
+```
+
+#### Unweighted + directional
+```{r}
+ud_kegg <- enrichment(hypeR_GEM_obj = hypeR_GEM_obj_di,
+                      genesets = kegg_GEM$genesets,
+                      genesets_name = "KEGG",
+                      method = "unweighted",
+                      min_metabolite = 2,
+                      background = length(GEM_gene_map$symbol))
+
+saveRDS(ud_kegg, file = file.path(PATH, "data/EMT/enrichment/ud_kegg.rds"))
+```
+
+
+#### Weighted + directional
+```{r}
+wd_kegg <- enrichment(hypeR_GEM_obj = hypeR_GEM_obj_di,
+                      genesets = kegg_GEM$genesets,
+                      genesets_name = "KEGG",
+                      method = "weighted",
+                      min_metabolite = 2,
+                      background = length(GEM_gene_map$symbol))
+
+saveRDS(wd_kegg, file = file.path(PATH, "data/EMT/enrichment/wd_kegg.rds"))
+```
+
+
+### REACTOME {.tabset}
+
+#### Unweighted + undirectional
+
+```{r}
+uu_reactome <- enrichment(hypeR_GEM_obj = hypeR_GEM_obj,
+                          genesets = reactome_GEM$genesets,
+                          genesets_name = "REACTOME",
+                          method = "unweighted",
+                          min_metabolite = 2,
+                          background = length(GEM_gene_map$symbol))
+
+saveRDS(uu_reactome, file = file.path(PATH, "data/EMT/enrichment/uu_reactome.rds"))
+```
+
+
+#### Weighted + undirectional
+
+```{r}
+wu_reactome <- enrichment(hypeR_GEM_obj = hypeR_GEM_obj,
+                      genesets = reactome_GEM$genesets,
+                      genesets_name = "REACTOME",
+                      method = "weighted",
+                      min_metabolite = 2,
+                      background = length(GEM_gene_map$symbol))
+
+saveRDS(wu_reactome, file = file.path(PATH, "data/EMT/enrichment/wu_reactome.rds"))
+```
+
+
+#### Unweighted + directional
+```{r}
+ud_reactome <- enrichment(hypeR_GEM_obj = hypeR_GEM_obj_di,
+                      genesets = reactome_GEM$genesets,
+                      genesets_name = "REACTOME",
+                      method = "unweighted",
+                      min_metabolite = 2,
+                      background = length(GEM_gene_map$symbol))
+
+saveRDS(ud_reactome, file = file.path(PATH, "data/EMT/enrichment/ud_reactome.rds"))
+```
+
+
+#### Weighted + directional
+```{r}
+wd_reactome <- enrichment(hypeR_GEM_obj = hypeR_GEM_obj_di,
+                      genesets = reactome_GEM$genesets,
+                      genesets_name = "REACTOME",
+                      method = "weighted",
+                      min_metabolite = 2,
+                      background = length(GEM_gene_map$symbol))
+
+saveRDS(wd_reactome, file = file.path(PATH, "data/EMT/enrichment/wd_reactome.rds"))
+```
+
+### GOBP {.tabset}
+
+#### Unweighted + undirectional
+
+```{r}
+uu_gobp <- enrichment(hypeR_GEM_obj = hypeR_GEM_obj,
+                      genesets = gobp_GEM$genesets,
+                      genesets_name = "GOBP",
+                      method = "unweighted",
+                      min_metabolite = 2,
+                      background = length(GEM_gene_map$symbol))
+
+saveRDS(uu_gobp, file = file.path(PATH, "data/EMT/enrichment/uu_gobp.rds"))
+```
+
+
+#### Weighted + undirectional
+
+```{r}
+wu_gobp <- enrichment(hypeR_GEM_obj = hypeR_GEM_obj,
+                      genesets = gobp_GEM$genesets,
+                      genesets_name = "GOBP",
+                      method = "weighted",
+                      min_metabolite = 2,
+                      background = length(GEM_gene_map$symbol))
+
+saveRDS(wu_gobp, file = file.path(PATH, "data/EMT/enrichment/wu_gobp.rds"))
+```
+
+#### Unweighted + directional
+```{r}
+ud_gobp <- enrichment(hypeR_GEM_obj = hypeR_GEM_obj_di,
+                      genesets = gobp_GEM$genesets,
+                      genesets_name = "GOBP",
+                      method = "unweighted",
+                      min_metabolite = 2,
+                      background = length(GEM_gene_map$symbol))
+
+saveRDS(ud_gobp, file = file.path(PATH, "data/EMT/enrichment/ud_gobp.rds"))
+```
+
+
+#### Weighted + directional
+```{r}
+wd_gobp <- enrichment(hypeR_GEM_obj = hypeR_GEM_obj_di,
+                      genesets = gobp_GEM$genesets,
+                      genesets_name = "GOBP",
+                      method = "weighted",
+                      min_metabolite = 2,
+                      background = length(GEM_gene_map$symbol))
+
+saveRDS(wd_gobp, file = file.path(PATH, "data/EMT/enrichment/wd_gobp.rds"))
+```
+
+### GOMF {.tabset}
+
+#### Unweighted + undirectional
+
+```{r}
+uu_gomf <- enrichment(hypeR_GEM_obj = hypeR_GEM_obj,
+                      genesets = gomf_GEM$genesets,
+                      genesets_name = "GOMF",
+                      method = "unweighted",
+                      min_metabolite = 2,
+                      background = length(GEM_gene_map$symbol))
+
+saveRDS(uu_gomf, file = file.path(PATH, "data/EMT/enrichment/uu_gomf.rds"))
+```
+
+
+#### Weighted + undirectional
+
+```{r}
+wu_gomf <- enrichment(hypeR_GEM_obj = hypeR_GEM_obj,
+                      genesets = gomf_GEM$genesets,
+                      genesets_name = "GOMF",
+                      method = "weighted",
+                      min_metabolite = 2,
+                      background = length(GEM_gene_map$symbol))
+
+saveRDS(wu_gomf, file = file.path(PATH, "data/EMT/enrichment/wu_gomf.rds"))
+```
+
+#### Unweighted + directional
+```{r}
+ud_gomf <- enrichment(hypeR_GEM_obj = hypeR_GEM_obj_di,
+                      genesets = gomf_GEM$genesets,
+                      genesets_name = "GOMF",
+                      method = "unweighted",
+                      min_metabolite = 2,
+                      background = length(GEM_gene_map$symbol))
+
+saveRDS(ud_gomf, file = file.path(PATH, "data/EMT/enrichment/ud_gomf.rds"))
+```
+
+
+#### Weighted + directional
+```{r}
+wd_gomf <- enrichment(hypeR_GEM_obj = hypeR_GEM_obj_di,
+                      genesets = gomf_GEM$genesets,
+                      genesets_name = "GOMF",
+                      method = "weighted",
+                      min_metabolite = 2,
+                      background = length(GEM_gene_map$symbol))
+
+saveRDS(wd_gomf, file = file.path(PATH, "data/EMT/enrichment/wd_gomf.rds"))
+```
+
+
+
+## Metabolomics enrichment
+
+### Load sets
+```{r}
+## MSETS
+M_metabolon_hmdbID <- readRDS(file = file.path(PATH, "data/MSETS/MSETS_metabolon_hmdbID.rds"))
+#M_metabolon_refmetID <- readRDS(file = file.path(PATH, "data/MSETS/MSETS_metabolon_refmetID.rds"))
+
+## RMSETS
+R_refmet_refmetID <- readRDS(file = file.path(PATH, "data/MSETS/RMSETS_refmet_necs2022_refmetID_v1.0.rds"))
+R_metabolon_refmetID <- readRDS(file = file.path(PATH, "data/MSETS/RMSETS_metabolon_necs2022_refmetID_v1.0.rds"))
+
+## metabolomics HMDB & refmet mapping
+mapped_HMDB_refmet <- readRDS(file = file.path(PATH,"/data/EMT/mapped_HMDB_refmet.rds")) %>% 
+  dplyr::rename(HMDB = metabolite)
+
+## metabolomics diffanal
+met_diffanal_tmp <- met_diffanal %>% 
+  dplyr::left_join(mapped_HMDB_refmet, by = "HMDB")
+
+## Background
+hmbd_bg <- unique(met_diffanal_tmp$HMDB)
+
+print(paste0("Background by HMDB: ",length(hmbd_bg)))
+
+refmet_bg <- met_diffanal_tmp %>% dplyr::filter(!is.na(refmet_name)) %>% dplyr::pull("refmet_name")
+
+print(paste0("Background by refmet: ",length(refmet_bg)))
+```
+
+
+### Prepare metabolic signatures
+```{r}
+met_diffanal_up_hmdbID <- met_diffanal_tmp  %>% 
+  dplyr::filter(gene_type == "up") %>% 
+  dplyr::pull("HMDB")
+
+met_diffanal_up_refmetID <- met_diffanal_tmp  %>% 
+  dplyr::filter(gene_type == "up") %>% 
+  dplyr::filter(!is.na(refmet_name)) %>% 
+  dplyr::pull("refmet_name")
+
+
+met_diffanal_dn_hmdbID <- met_diffanal_tmp  %>% 
+  dplyr::filter(gene_type == "dn") %>% 
+  dplyr::pull("HMDB")
+
+met_diffanal_dn_refmetID <- met_diffanal_tmp  %>% 
+  dplyr::filter(gene_type == "dn") %>% 
+  dplyr::filter(!is.na(refmet_name)) %>% 
+  dplyr::pull("refmet_name")
+
+met_diffanal_hmdbID <- list(up = met_diffanal_up_hmdbID,
+                            dn =met_diffanal_dn_hmdbID)
+
+met_diffanal_refmetID <- list(up = met_diffanal_up_refmetID,
+                              dn =met_diffanal_dn_refmetID)
+```
+
+### MSETS enrichment {.tabset}
+
+```{r}
+mset_reduce <- function(mset,
+                        background,
+                        min_size){
+  
+  mset_flt <- lapply(mset, intersect, background)
+  mset_flt <- mset_flt[lengths(mset_flt) >= min_size]
+  
+  return(mset_flt)
+}
+```
+
+
+```{r}
+min_size <- 5
+
+## metabolonSupPthwy
+M_metabolonSupPthwy_flt <- mset_reduce(M_metabolon_hmdbID$metabolonSupPthwy, hmbd_bg, min_size)
+  
+## metabolonSubPthwy
+M_metabolonSubPthwy_flt <- mset_reduce(M_metabolon_hmdbID$metabolonSubPthwy, hmbd_bg, min_size)
+
+## refmetSuperClass
+refmetSuperClass_flt <- mset_reduce(M_metabolon_hmdbID$refmetSuperClass, hmbd_bg, min_size)
+
+## refmetMainClass
+refmetMainClass_flt <- mset_reduce(M_metabolon_hmdbID$refmetMainClass, hmbd_bg, min_size)
+
+## refmetSubClass
+refmetSubClass_flt <- mset_reduce(M_metabolon_hmdbID$refmetSubClass, hmbd_bg, min_size)
+```
+
+#### metabolonSupPthwy
+```{r}
+hyp_metabolonSupPthwy <- hypeR(met_diffanal_hmdbID , 
+                               M_metabolonSupPthwy_flt, 
+                               test="hypergeometric", 
+                               background=nrow(met_diffanal))
+
+saveRDS(hyp_metabolonSupPthwy, file = file.path(PATH, "data/EMT/enrichment/M_hyp_metabolonSupPthwy.rds"))
+```
+
+#### metabolonSubPthwy
+```{r}
+hyp_metabolonSubPthwy <- hypeR(met_diffanal_hmdbID , 
+                               M_metabolonSubPthwy_flt, 
+                               test="hypergeometric", 
+                               background=nrow(met_diffanal))
+
+saveRDS(hyp_metabolonSubPthwy, file = file.path(PATH, "data/EMT/enrichment/M_hyp_metabolonSubPthwy.rds"))
+```
+
+
+#### refmetSuperClass
+
+```{r}
+hyp_refmetSuperClass <- hypeR(met_diffanal_hmdbID , 
+                              refmetSuperClass_flt, 
+                              test="hypergeometric", 
+                              background=nrow(met_diffanal))
+
+saveRDS(hyp_refmetSuperClass, file = file.path(PATH, "data/EMT/enrichment/M_hyp_refmetSuperClass.rds"))
+```
+
+#### refmetMainClass
+
+```{r}
+hyp_refmetMainClass <- hypeR(met_diffanal_hmdbID , 
+                             refmetMainClass_flt, 
+                             test="hypergeometric", 
+                             background=nrow(met_diffanal))
+
+saveRDS(hyp_refmetMainClass, file = file.path(PATH, "data/EMT/enrichment/M_hyp_refmetMainClass.rds"))
+```
+
+#### refmetSubClass
+```{r}
+hyp_refmetSubClass <- hypeR(met_diffanal_hmdbID , 
+                             refmetSubClass_flt, 
+                             test="hypergeometric", 
+                             background=nrow(met_diffanal))
+
+saveRDS(hyp_refmetSubClass, file = file.path(PATH, "data/EMT/enrichment/M_hyp_refmetSubClass.rds"))
+```
+
+
+### RMSETS enrichment {.tabset}
+
+```{r}
+R_metabolon_flt <- mset_reduce(R_metabolon_refmetID$genesets, refmet_bg, min_size)
+R_refmet_flt <- mset_reduce(R_refmet_refmetID$genesets, refmet_bg, min_size)
+```
+
+#### Metabolon
+```{r}
+hyp_metabolon <- hypeR(met_diffanal_refmetID , 
+                       R_metabolon_flt, 
+                       test="hypergeometric", 
+                       background=nrow(met_diffanal))
+
+
+saveRDS(hyp_metabolon, file = file.path(PATH, "data/EMT/enrichment/R_hyp_metabolon.rds"))
+```
+
+#### Refmet
+```{r}
+hyp_refmet <- hypeR(met_diffanal_refmetID , 
+                       R_refmet_flt, 
+                       test="hypergeometric", 
+                       background=nrow(met_diffanal))
+
+saveRDS(hyp_refmet, file = file.path(PATH, "data/EMT/enrichment/R_hyp_refmet.rds"))
+```

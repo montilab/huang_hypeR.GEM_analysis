@@ -1,0 +1,292 @@
+---
+title: "Result Summary"
+author: "Ziwei Huang"
+date:   "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    theme: united
+    code_folding: hide
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,message = FALSE,warning = FALSE)
+```
+
+## Setting
+```{r}
+rm(list=ls())
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(patchwork))
+suppressPackageStartupMessages(library(readxl))
+
+PATH <- file.path(Sys.getenv("NECS"),"Ziwei_Analysis","hypeR.GEM_evaluation")
+#source(file.path(PATH,"R/ks_test.R"))
+```
+
+## Single-molecule level
+```{r}
+protein_level_summary <- read_excel(file.path(PATH ,"data/summary_updated.xlsx"), 
+    sheet = "protein_level") %>% 
+    dplyr::mutate(Dataset = factor(Dataset, levels = c("EMT","Serine_Starvation","NECS_Age","NECS_EL",
+                                                      "M005_Kidney","M005_Liver","M005_Gastroc","M005_Plasma",
+                                                      "ROSMAP","COVID_Urine","COVID_Serum"))) %>% 
+  dplyr::mutate(sample_type = case_when(
+    Dataset %in% c("EMT","Serine_Starvation") ~ "Cell",
+    Dataset %in% c("M005_Kidney","M005_Liver","M005_Gastroc", "ROSMAP") ~"Tissue",
+    TRUE ~ "Plasma/Urine"
+  )) %>% 
+  dplyr::mutate(sample_type = factor(sample_type, levels = c("Cell","Tissue", "Plasma/Urine"))) %>% 
+  dplyr::mutate(minus_log10_pval = -log10(Pval),
+                minus_log10_pval_di = -log10(Pval_di))
+```
+
+### Protein-level result summary by "Dataset"
+```{r}
+# Prepare data for lollipop plot
+p1 <- protein_level_summary %>%
+  mutate(ID = factor(Dataset, levels = rev(levels(Dataset)))) %>%
+  select(ID, minus_log10_pval, minus_log10_pval_di) %>%
+  pivot_longer(cols = c(minus_log10_pval, minus_log10_pval_di),
+               names_to = "Type", values_to = "logPval") %>%
+  mutate(Type = factor(recode(Type,
+                              minus_log10_pval = "Non-directional",
+                              minus_log10_pval_di = "Directional"),
+                       levels = c("Non-directional", "Directional"))) %>% 
+ggplot(., aes(x = logPval, y = ID, color = Type)) +
+  geom_line(aes(group = ID), color = "gray85", linewidth = 0.6) +
+  geom_point(size = 2, alpha = 0.85) +
+  geom_vline(xintercept = -log10(0.05), linetype = "dashed", color = "red") +
+  scale_color_manual(values = c("Non-directional" = "#2171b5", "Directional" = "#e6550d")) +
+  labs(x = "", y = NULL, color = NULL) +
+  theme_minimal(base_size = 7) +
+  theme(
+    axis.text = element_text(size = 8, margin = margin(r = 1)),
+    axis.title.y = element_text(margin = margin(r = 2)),
+    axis.ticks.length = unit(0.08, "lines"),
+    legend.position = "right",
+    legend.box = "vertical",
+    legend.direction = "vertical",
+    legend.text = element_text(size = 8),
+    legend.key.size = unit(0.3, "lines"),
+    legend.key.width = unit(0.8, "lines"),
+    legend.spacing.y = unit(0.2, "lines"),
+    legend.box.margin = margin(1, 0, 0, 0),
+    panel.grid.major.y = element_blank(),
+    panel.grid.major.x = element_line(color = "gray90"),
+    plot.margin = margin(1, 1, 1, 1)
+  )
+
+p1
+```
+
+
+### Protein-level result summary by "sample_type"
+```{r}
+max_fdr <- 0.05  # Significance threshold
+
+# Plot p2: Violin + jitter (suppress legend here)
+p2 <- protein_level_summary %>%
+  select(sample_type, minus_log10_pval, minus_log10_pval_di) %>%
+  pivot_longer(cols = c(minus_log10_pval, minus_log10_pval_di), 
+               names_to = "type", values_to = "value") %>%
+  mutate(mapping = factor(case_when(
+    type == "minus_log10_pval" ~ "Non-directional",
+    type == "minus_log10_pval_di" ~ "Directional"
+  ), levels = c("Non-directional", "Directional"))) %>%
+  ggplot(aes(x = sample_type, y = value, fill = mapping, color = mapping)) +
+  geom_violin(position = position_dodge(0.8), trim = FALSE, alpha = 0.25, color = NA) +
+  geom_jitter(
+    position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.8),
+    size = 1.4, alpha = 0.8,
+    show.legend = FALSE  # hide jitter legend
+  ) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
+  scale_fill_manual(values = c("Non-directional" = "#9ecae1", "Directional" = "#fdae6b")) +
+  scale_color_manual(values = c("Non-directional" = "#2171b5", "Directional" = "#e6550d")) +
+  scale_x_discrete(limits = c("Cell", "Tissue", "Plasma/Urine")) +
+  labs(x = NULL, y = "", fill = NULL, color = NULL) +
+  theme_minimal(base_size = 7) +
+  theme(
+    axis.text = element_text(size = 8, margin = margin(r = 1)),
+    axis.title.y = element_text(margin = margin(r = 2)),
+    axis.ticks.length = unit(0.08, "lines"),
+    legend.position = "none",
+    panel.grid.major = element_line(color = "gray90"),
+    plot.margin = margin(1, 1, 1, 1)
+  )
+
+
+p2
+```
+
+```{r}
+# Combine plots without collecting redundant legends
+protein_level_fig <- p1 / p2 +
+  plot_layout(ncol = 1, heights = c(1.2, 1)) +
+  plot_annotation(theme = theme(plot.margin = margin(1, 1, 1, 1)))
+
+protein_level_fig
+
+# ggsave(
+#   filename = file.path(PATH, "results/protein_level_evaluation.pdf"),
+#   plot = protein_level_fig,
+#   width = 3.5, height = 5, units = "in", dpi = 600
+# )
+
+```
+
+
+
+## Pathway level
+```{r}
+pathway_level_summary <- read_excel(file.path(PATH ,"data/summary_updated.xlsx"), 
+    sheet = "pathway_level") %>% 
+    dplyr::mutate(Dataset = factor(Dataset, levels = c("EMT","Serine_Starvation","NECS_Age","NECS_EL",
+                                                      "M005_Kidney","M005_Liver","M005_Gastroc","M005_Plasma",
+                                                      "ROSMAP","COVID_Urine","COVID_Serum"))) %>% 
+  dplyr::mutate(sample_type = case_when(
+    Dataset %in% c("EMT","Serine_Starvation") ~ "Cell",
+    Dataset %in% c("M005_Kidney","M005_Liver","M005_Gastroc", "ROSMAP") ~"Tissue",
+    TRUE ~ "Plasma/Urine"
+  )) %>% 
+  dplyr::mutate(sample_type = factor(sample_type, levels = c("Cell","Tissue", "Plasma/Urine"))) %>% 
+  dplyr::mutate(minus_log10_pval = -log10(Pval),
+                minus_log10_pval_di = -log10(Pval_di))
+```
+
+
+## pathway-level result summary by "Dataset"
+```{r}
+# Pathway-level result by Dataset (boxplot version, flipped)
+p3 <- pathway_level_summary %>% 
+  select(Dataset, Geneset, minus_log10_pval, minus_log10_pval_di) %>% 
+  dplyr::mutate(Dataset = factor(Dataset, levels = c("COVID_Serum", "COVID_Urine","ROSMAP","M005_Plasma",
+                                                     "M005_Gastroc","M005_Liver", "M005_Kidney","NECS_EL",
+                                                     "NECS_Age", "Serine_Starvation","EMT"))) %>% 
+  pivot_longer(cols = c(minus_log10_pval, minus_log10_pval_di),
+               names_to = "type", values_to = "value") %>%
+  mutate(mapping = factor(case_when(
+    type == "minus_log10_pval" ~ "Non-directional",
+    type == "minus_log10_pval_di" ~ "Directional"
+  ), levels = c("Non-directional", "Directional"))) %>%
+  ggplot(aes(x = Dataset, y = value, fill = mapping)) +
+  geom_boxplot(
+    position = position_dodge(0.8), width = 0.5,
+    outlier.size = 1.2, outlier.alpha = 0.6, lwd = 0.3
+  ) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
+  scale_fill_manual(values = c("Non-directional" = "#9ecae1", "Directional" = "#fdae6b")) +
+  labs(x = NULL, y = NULL, fill = NULL) +
+  theme_minimal(base_size = 7) +
+  theme(
+    axis.text = element_text(size = 8, margin = margin(r = 1)),
+    axis.title.y = element_text(margin = margin(r = 2)),
+    axis.ticks.length = unit(0.08, "lines"),
+    legend.position = "none",
+    panel.grid.major = element_line(color = "gray90"),
+    plot.margin = margin(1, 1, 1, 1)
+  ) +
+  coord_flip()
+
+p3
+```
+
+```{r}
+# Pathway-level result by sample_type
+p4 <- pathway_level_summary %>% 
+  select(sample_type, minus_log10_pval, minus_log10_pval_di) %>% 
+  pivot_longer(cols = c(minus_log10_pval, minus_log10_pval_di),
+               names_to = "type", values_to = "value") %>% 
+  mutate(mapping = factor(case_when(
+    type == "minus_log10_pval" ~ "Non-directional",
+    type == "minus_log10_pval_di" ~ "Directional"
+  ), levels = c("Non-directional", "Directional"))) %>%
+  ggplot(aes(x = sample_type, y = value, fill = mapping, color = mapping)) +
+  geom_violin(position = position_dodge(0.8), trim = FALSE, alpha = 0.25, color = NA) +
+  geom_jitter(
+    position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.8),
+    size = 1.4, alpha = 0.8,
+    show.legend = FALSE
+  ) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
+  scale_fill_manual(values = c("Non-directional" = "#9ecae1", "Directional" = "#fdae6b")) +
+  scale_color_manual(values = c("Non-directional" = "#2171b5", "Directional" = "#e6550d")) +
+  scale_x_discrete(limits = c("Cell", "Tissue", "Plasma/Urine")) +
+  labs(x = NULL, y = "", fill = NULL, color = NULL) +
+  theme_minimal(base_size = 7) +
+  theme(
+    axis.text = element_text(size = 8, margin = margin(r = 1)),
+    axis.title.y = element_text(margin = margin(r = 2)),
+    axis.ticks.length = unit(0.08, "lines"),
+    legend.position = "none",
+    panel.grid.major = element_line(color = "gray90"),
+    plot.margin = margin(1, 1, 1, 1)
+  )
+
+p4
+```
+
+```{r}
+# Combine p3 and p4
+pathway_level_fig <- p3 / p4 +
+  plot_layout(ncol = 1, heights = c(1.2, 1)) +
+  plot_annotation(theme = theme(plot.margin = margin(1, 1, 1, 1)))
+
+pathway_level_fig
+```
+
+```{r}
+# Adjust violin + jitter transparency for p2 and p4
+p2 <- p2 +
+  geom_violin(position = position_dodge(0.8), trim = FALSE, alpha = 0.6, color = NA) +
+  geom_jitter(
+    position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.8),
+    size = 1.4, alpha = 0.5,
+    show.legend = FALSE
+  )
+
+p4 <- p4 +
+  geom_violin(position = position_dodge(0.8), trim = FALSE, alpha = 0.6, color = NA) +
+  geom_jitter(
+    position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.8),
+    size = 1.4, alpha = 0.5,
+    show.legend = FALSE
+  )
+
+# Combine all four plots: p1, p2, p3, p4 with single shared legend on the right
+full_figure <- ((p1 / p2) | (p3 / p4)) +
+  plot_layout(ncol = 2, widths = c(1, 1), guides = "collect") +
+  plot_annotation(theme = theme(plot.margin = margin(3, 3, 3, 3), legend.position = "bottom"))
+
+# Save combined figure
+ggsave(
+  filename = file.path(PATH, "results/evaluation_summary.pdf"),
+  plot = full_figure,
+  width = 7.0, height = 5.5, units = "in", dpi = 600
+)
+
+full_figure
+```
+
+## Global K-S test
+
+### protein-level
+
+#### Undirectional
+```{r}
+alpha <- 0.05
+
+#ks.test(protein_level_summary$pvalue_di, "punif", 0, 1, alternative="greater")
+ks.test(protein_level_summary$Pval, "punif", 0, 1, alternative="greater")
+ks.test(protein_level_summary$Pval_di, "punif", 0, 1, alternative="greater")
+```
+
+
+### pathway-level
+```{r}
+ks.test(pathway_level_summary$Pval, "punif", 0, 1, alternative="greater")
+ks.test(pathway_level_summary$Pval_di, "punif", 0, 1, alternative="greater")
+```
+

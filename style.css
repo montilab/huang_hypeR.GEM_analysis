@@ -1,0 +1,37 @@
+<style type="text/css">
+
+body{ /* Normal  */
+  font-size: 12px;
+}
+td {  /* Table  */
+  font-size: 10px;
+}
+h1.title {
+  font-size: 24px;
+  color: DarkBlue;
+}
+.subtitle {
+  font-size: 20px;
+  color: DarkBlue;
+}
+h1 { /* Header 1 */
+  font-size: 18px;
+  color: DarkBlue;
+}
+h2 { /* Header 2 */
+  font-size: 16px;
+  color: DarkBlue;
+}
+h3 { /* Header 3 */
+  font-size: 14px;
+  color: DarkBlue;
+}
+h4 { /* Header 4 */
+  font-size: 13px;
+  color: DarkBlue;
+}
+blockquote { 
+  font-size: 12px;
+  color: Gray;
+}
+</style>

@@ -1,0 +1,178 @@
+---
+title: "NECS EL Summary Tables"
+author: "Ziwei Huang"
+date:   "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    theme: united
+    code_folding: hide
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,message = FALSE,warning = FALSE)
+```
+
+## Setting
+```{r}
+rm(list=ls())
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(hypeR))
+suppressPackageStartupMessages(library(openxlsx))
+
+PATH <- file.path(Sys.getenv("NECS"),"Ziwei_Analysis","hypeR.GEM_evaluation")
+#devtools::load_all(file.path(PATH, "../in_dev_packages/hypeR.GEM"))
+source(file.path(PATH,"R/read_multiple_sheets.R"))
+```
+
+## Differential Analysis and Mapping Results
+
+### Load
+```{r}
+max_fdr <- 0.05
+
+## Differential analysis
+GEM_gene_map <- readRDS(file.path(PATH,"data/GEM_gene_map.rds"))
+
+met_diffanal <-  read_multiple_sheets(file.path(PATH,"data/NECS/supp_tables_formatted.xlsx"),
+                            excluded = "Annotation")
+
+## Only use Table S1(age), S2(EL)
+met_diffanal <- met_diffanal$Table_S2 %>% 
+  dplyr::arrange(`cent.p.value`) %>% 
+  dplyr::filter(`cent.q.value` <= max_fdr)
+
+## protein
+protein_diffanal <-  readRDS(file = file.path(PATH,"data/NECS/lmRes.RDS")) %>% 
+  dplyr::mutate(in_GEM = case_when(
+    geneID %in% GEM_gene_map$symbol ~ TRUE,
+    TRUE ~ FALSE
+  )) %>%
+  dplyr::arrange(`Pr(>|t|)`) %>% 
+  dplyr::filter(fdr <= max_fdr)
+
+## hypeR-GEM mapping
+
+### non-directional
+hypeR_GEM_obj <- readRDS(file = file.path(PATH, "data/NECS/EL_hypR_object.rds"))
+
+gene_up <- hypeR_GEM_obj$gene_tables$up %>% 
+  dplyr::mutate(gene_type = "up")
+
+gene_dn <- hypeR_GEM_obj$gene_tables$dn %>% 
+  dplyr::mutate(gene_type = "dn")
+
+gene_table <- rbind(gene_up, gene_dn) %>% 
+  dplyr::arrange(p_value) %>% 
+  dplyr::rename(ensemble_id = name)
+
+### directional
+hypeR_GEM_obj_di <- readRDS(file = file.path(PATH, "data/NECS/EL_hypR_object_di.rds"))
+
+gene_up_di <- hypeR_GEM_obj_di$gene_tables$up %>% 
+  dplyr::mutate(gene_type = "up")
+
+gene_dn_di <- hypeR_GEM_obj_di$gene_tables$dn %>% 
+  dplyr::mutate(gene_type = "dn")
+
+gene_table_di <- rbind(gene_up_di, gene_dn_di) %>% 
+  dplyr::arrange(p_value) %>% 
+  dplyr::rename(ensemble_id = name)
+```
+
+### Save
+```{r}
+## save to excel spreesheet
+res <- list("Diffanal Proteomics" = protein_diffanal,
+            "Diffanal Metabolomics" = met_diffanal,
+            "GEM-mapped Non-directional" = gene_table,
+            "GEM-mapped Directional" = gene_table_di)
+
+write.xlsx(res, file = file.path(PATH, "results/tables/NECS_EL_summary_tables.xlsx"))
+```
+
+## Enrichment results
+
+### hypeR-GEM enrichment
+```{r}
+hallmark_files <- list.files(file.path(PATH, "data/NECS/enrichment/EL"), pattern = "hallmark\\.rds$", full.names = TRUE)
+kegg_files <- list.files(file.path(PATH, "data/NECS/enrichment/EL"), pattern = "kegg\\.rds$", full.names = TRUE)
+reactome_files <- list.files(file.path(PATH, "data/NECS/enrichment/EL"), pattern = "reactome\\.rds$", full.names = TRUE)
+gobp_files <- list.files(file.path(PATH, "data/NECS/enrichment/EL"), pattern = "gobp\\.rds$", full.names = TRUE)
+gomf_files <- list.files(file.path(PATH, "data/NECS/enrichment/EL"), pattern = "gomf\\.rds$", full.names = TRUE)
+```
+
+```{r}
+hallmark_res <- setNames(lapply(hallmark_files, readRDS), sub("\\.rds$", "", basename(hallmark_files)))
+kegg_res <- setNames(lapply(kegg_files, readRDS), sub("\\.rds$", "", basename(kegg_files)))
+reactome_res <- setNames(lapply(reactome_files, readRDS), sub("\\.rds$", "", basename(reactome_files)))
+gobp_res <-  setNames(lapply(gobp_files, readRDS), sub("\\.rds$", "", basename(gobp_files)))
+gomf_res <-  setNames(lapply(gomf_files, readRDS), sub("\\.rds$", "", basename(gomf_files)))
+```
+### Save
+```{r}
+hallmark_list <- list( "HALLMARK_uwt_nondi_up" = hallmark_res$uu_hallmark$up$data,
+                       "HALLMARK_uwt_nondi_dn" = hallmark_res$uu_hallmark$dn$data,
+                       
+                       "HALLMARK_uwt_di_up" = hallmark_res$ud_hallmark$up$data,
+                       "HALLMARK_uwt_di_dn" = hallmark_res$ud_hallmark$dn$data,
+                       
+                       "HALLMARK_wt_nondi_up" = hallmark_res$wu_hallmark$up$data,
+                       "HALLMARK_wt_nondi_dn" = hallmark_res$wu_hallmark$dn$data,
+                       
+                       "HALLMARK_wt_di_up" = hallmark_res$wd_hallmark$up$data,
+                       "HALLMARK_wt_di_dn" = hallmark_res$wd_hallmark$dn$data)
+
+kegg_list <- list( "KEGG_uwt_nondi_up" = kegg_res$uu_kegg$up$data,
+                   "KEGG_uwt_nondi_dn" = kegg_res$uu_kegg$dn$data,
+                   
+                   "KEGG_uwt_di_up" = kegg_res$ud_kegg$up$data,
+                   "KEGG_uwt_di_dn" = kegg_res$ud_kegg$dn$data,
+                   
+                   "KEGG_wt_nondi_up" = kegg_res$wu_kegg$up$data,
+                   "KEGG_wt_nondi_dn" = kegg_res$wu_kegg$dn$data,
+                   
+                   "KEGG_wt_di_up" = kegg_res$wd_kegg$up$data,
+                   "KEGG_wt_di_dn" = kegg_res$wd_kegg$dn$data)  
+
+reactome_list <- list( "REACTOME_uwt_nondi_up" = reactome_res$uu_reactome$up$data,
+                       "REACTOME_uwt_nondi_dn" = reactome_res$uu_reactome$dn$data,
+                       
+                       "REACTOME_uwt_di_up" = reactome_res$ud_reactome$up$data,
+                       "REACTOME_uwt_di_dn" = reactome_res$ud_reactome$dn$data,
+                       
+                       "REACTOME_wt_nondi_up" = reactome_res$wu_reactome$up$data,
+                       "REACTOME_wt_nondi_dn" = reactome_res$wu_reactome$dn$data,
+                       
+                       "REACTOME_wt_di_up" = reactome_res$wd_reactome$up$data,
+                       "REACTOME_wt_di_dn" = reactome_res$wd_reactome$dn$data)  
+
+gobp_list <- list( "GOBP_uwt_nondi_up" = gobp_res$uu_gobp$up$data,
+                   "GOBP_uwt_nondi_dn" = gobp_res$uu_gobp$dn$data,
+                   
+                   "GOBP_uwt_di_up" = gobp_res$ud_gobp$up$data,
+                   "GOBP_uwt_di_dn" = gobp_res$ud_gobp$dn$data,
+                   
+                   "GOBP_wt_nondi_up" = gobp_res$wu_gobp$up$data,
+                   "GOBP_wt_nondi_dn" = gobp_res$wu_gobp$dn$data,
+                   
+                   "GOBP_wt_di_up" = gobp_res$wd_gobp$up$data,
+                   "GOBP_wt_di_dn" = gobp_res$wd_gobp$dn$data)  
+
+gomf_list <- list( "GOMF_uwt_nondi_up" = gomf_res$uu_gomf$up$data,
+                   "GOMF_uwt_nondi_dn" = gomf_res$uu_gomf$dn$data,
+                   
+                   "GOMF_uwt_di_up" = gomf_res$ud_gomf$up$data,
+                   "GOMF_uwt_di_dn" = gomf_res$ud_gomf$dn$data,
+                   
+                   "GOMF_wt_nondi_up" = gomf_res$wu_gomf$up$data,
+                   "GOMF_wt_nondi_dn" = gomf_res$wu_gomf$dn$data,
+                   
+                   "GOMF_wt_di_up" = gomf_res$wd_gomf$up$data,
+                   "GOMF_wt_di_dn" = gomf_res$wd_gomf$dn$data)   
+
+GEM_enrichment_res <- c(hallmark_list, kegg_list, reactome_list, gobp_list, gomf_list)
+
+write.xlsx(GEM_enrichment_res, file = file.path(PATH, "results/tables/NECS_EL_GEM_enrichment.xlsx"))
+```
