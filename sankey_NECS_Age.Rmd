@@ -19,6 +19,7 @@ knitr::opts_chunk$set(echo = TRUE,message = FALSE,warning = FALSE)
 rm(list=ls())
 suppressPackageStartupMessages(library(tidyverse))
 suppressPackageStartupMessages(library(hypeR))
+suppressPackageStartupMessages(library(openxlsx))
 
 suppressPackageStartupMessages(library(ggplot2))
 suppressPackageStartupMessages(library(ggalluvial))
@@ -136,6 +137,7 @@ refmet_msets <- list(refmetSuperClass = M_refmetSuperClass_flt,
 ```
 
 
+
 ## Enriched MSETs
 ```{r}
 max_fdr <- 0.05
@@ -149,11 +151,17 @@ met_sigs <- list(
 met_hyp_input <- list(up = met_sigs$up$refmet_name,
                       dn = met_sigs$dn$refmet_name)
 
+
+
 ## Metabolon
 metabolon_hyp_enrich <- enrich_helper(met_hyp_input, metabolon_msets, background=nrow(met_diffanal), threshold=max_fdr) %>%
   dplyr::mutate(full_label = stringr::str_c(label, set_name, sep = "_"))
 
+
 metabolon_msets <- lapply(metabolon_msets, function(x,enriched_pathways){return(x[names(x)%in%enriched_pathways])}, enriched_pathways = metabolon_hyp_enrich$label)
+
+## temporary save
+saveRDS(metabolon_msets, file.path(PATH, "data/necs_age_metabolon_msets_list.rds"))
 
 ## Refmet
 refmet_hyp_enrich <- enrich_helper(met_hyp_input, refmet_msets, background=nrow(met_diffanal), threshold=max_fdr) %>%
@@ -179,15 +187,47 @@ gene_layer_enrich <- enrich_helper(gene_layer_sigs, gsets_list, background=3068,
     dplyr::mutate(full_label = stringr::str_c(label, set_name, sep = "_"))
 
 ## For visualization purpose
-top <- 30
-gene_layer_enrich <- gene_layer_enrich %>%
+top <- 10
+gene_layer_enrich_top <- gene_layer_enrich %>%
   dplyr::group_by(set_name) %>%
   dplyr::arrange(fdr, .by_group = TRUE) %>%                          
   dplyr::slice_head(n = top) %>%                                       
   dplyr::ungroup()
 
 
-gsets_list <- lapply(gsets_list, function(x,enriched_pathways){return(x[names(x)%in%enriched_pathways])}, enriched_pathways = gene_layer_enrich$label)
+gsets_list <- lapply(gsets_list, function(x,enriched_pathways){return(x[names(x)%in%enriched_pathways])}, enriched_pathways = gene_layer_enrich_top$label)
+
+saveRDS(gsets_list, file.path(PATH, "data/necs_age_gsets_list.rds"))
+```
+
+## Organize enriched MSets and GSets
+```{r}
+hallmark_enrich <- gene_layer_enrich %>% 
+  dplyr::filter(set_name == "hallmark") %>% 
+  dplyr::select(-c("set_name", "full_label"))
+
+kegg_enrich <- gene_layer_enrich %>% 
+  dplyr::filter(set_name == "kegg") %>% 
+  dplyr::select(-c("set_name", "full_label"))
+
+reactome_enrich <- gene_layer_enrich %>% 
+  dplyr::filter(set_name == "reactome") %>% 
+  dplyr::select(-c("set_name", "full_label"))
+
+metabolon_enrich <- metabolon_hyp_enrich %>% 
+  dplyr::select(-c("set_name"))
+
+refmet_enrich <- refmet_hyp_enrich %>% 
+  dplyr::select(-c("set_name"))
+
+## save to excel spreesheet
+res <- list("Metabolon" = metabolon_enrich,
+            "Refmet" = refmet_enrich,
+            "HALLMARK" = hallmark_enrich,
+            "KEGG" = kegg_enrich,
+            "REACTOME" = reactome_enrich)
+
+write.xlsx(res, file = file.path(PATH, "results/tables/NECS_Age_enrichment.xlsx"))
 ```
 
 
