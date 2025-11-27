@@ -22,8 +22,7 @@ suppressPackageStartupMessages(library(hypeR))
 suppressPackageStartupMessages(library(openxlsx))
 
 PATH <- file.path(Sys.getenv("NECS"),"Ziwei_Analysis","hypeR.GEM_evaluation")
-#devtools::load_all(file.path(PATH, "../in_dev_packages/hypeR.GEM"))
-source(file.path(PATH,"R/read_multiple_sheets.R"))
+source(file.path(PATH,"R/utility.R"))
 ```
 
 ## Differential Analysis and Mapping Results
@@ -58,10 +57,20 @@ protein_diffanal <-  readRDS(file = file.path(PATH,"data/NECS/lmRes.RDS")) %>%
 hypeR_GEM_obj <- readRDS(file = file.path(PATH, "data/NECS/EL_hypR_object.rds"))
 
 gene_up <- hypeR_GEM_obj$gene_tables$up %>% 
-  dplyr::mutate(gene_type = "up")
+  dplyr::mutate(gene_type = "up") %>% 
+  dplyr::mutate(gene_specificity = sigmoid_transformation(p_value)) %>% 
+  dplyr::select(c("name","symbol","associated_reactions","total_association","total_association",
+                  "signature_association","signature_size","background","p_value","gene_specificity",
+                  "associated_metabolites","gene_type"))
+
 
 gene_dn <- hypeR_GEM_obj$gene_tables$dn %>% 
-  dplyr::mutate(gene_type = "dn")
+  dplyr::mutate(gene_type = "dn") %>% 
+  dplyr::mutate(gene_specificity = sigmoid_transformation(p_value)) %>% 
+  dplyr::select(c("name","symbol","associated_reactions","total_association","total_association",
+                  "signature_association","signature_size","background","p_value","gene_specificity",
+                  "associated_metabolites","gene_type"))
+
 
 gene_table <- rbind(gene_up, gene_dn) %>% 
   dplyr::arrange(p_value) %>% 

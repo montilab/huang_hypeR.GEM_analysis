@@ -593,4 +593,16 @@ ggplot_volcano <- function(
   return(p)
 }
 
+sigmoid_transformation <- function(p,
+                                   a = 1, ## smoothness
+                                   b = -1,   # p = 0.1 as half-point
+                                   eps = 1e-12) {
+  
+  # clip to avoid log10(0)
+  p <- pmax(pmin(p, 1 - eps), eps)
+  
+  w <- 1 / (1 + exp(a * (log10(p) - b)))
+  return(w)
+}
+
 
