@@ -260,7 +260,7 @@ mset_reduce <- function(mset,
 reduce_gsets <- function(gsets, background, min_size = 5, verbose = TRUE) {
   new_gsets <- gsets$clone()
   new_gsets$genesets <- lapply(new_gsets$genesets, intersect, background)
-  new_gsets$genesets <- new_gsets$genesets[lengths(new_gsets$genesets)>=5]
+  new_gsets$genesets <- new_gsets$genesets[lengths(new_gsets$genesets)>=min_size]
   if(verbose) cat(length(gsets$genesets), "-->", length(new_gsets$genesets))
   return(new_gsets)
 }
